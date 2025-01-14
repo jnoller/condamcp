@@ -1,0 +1,21 @@
+[project]
+name = "condamcp"
+version = "0.0.1"
+description = "An example MCP for working with Conda commands"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.0.0",
+    "mcp[cli]>=1.0.0"
+]
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+license = { text = "BSD-3-Clause" }
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+condamcp = "condamcp:run_mcp_server"
