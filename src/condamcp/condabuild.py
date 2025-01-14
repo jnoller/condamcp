@@ -14,7 +14,7 @@ from .commandlr import Commandlr
 from .utils import get_default_conda_binary, get_conda_activation_commands
 
 class CondaBuild(Commandlr):
-    def __init__(self, *args, build_env="build", logs_dir=None, **kwargs):
+    def __init__(self, *args, build_env=None, logs_dir=None, **kwargs):
         """Initialize conda build wrapper with default settings.
         
         Args:
@@ -47,27 +47,37 @@ class CondaBuild(Commandlr):
     def _run_build_process(self, build_id, command, log_file, env=None):
         """Run the build process and capture output to log file."""
         with open(log_file, 'w') as f:
-            # Create shell script with conda activation
-            activation_commands = get_conda_activation_commands()
-            shell_commands = [
-                *activation_commands,
-                f"conda activate {self.build_env}"
+            # Construct conda run command
+            conda_command = [
+                self.binary_path, "run",
+                "-n", self.build_env,
+                "--no-capture-output"
             ]
             
             # Add environment variables if specified
             if env:
                 for key, value in env.items():
-                    shell_commands.append(f'export {key}="{value}"')
+                    conda_command.extend(["-v", f"{key}={value}"])
             
-            shell_commands.append(" ".join(command))
+            # Add "conda" before "build" since we're running conda-build inside the env
+            conda_command.append("conda")
+            conda_command.extend(command[1:])  # Skip the conda binary path from original command
+            
+            # Get the directory containing the config file from the command args
+            config_dir = None
+            for i, arg in enumerate(command):
+                if arg == '--config-file':
+                    config_dir = os.path.dirname(command[i + 1])
+                    break
             
             process = subprocess.Popen(
-                ["/bin/bash", "-c", " && ".join(shell_commands)],
+                conda_command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,  # Line buffered
-                env=os.environ.copy()  # Ensure conda env vars are passed through
+                env=os.environ.copy(),
+                cwd=config_dir  # Set working directory to where config file is
             )
             
             self.active_builds[build_id] = {
@@ -75,7 +85,7 @@ class CondaBuild(Commandlr):
                 'status': 'running',
                 'start_time': datetime.now(),
                 'log_file': log_file,
-                'command': " && ".join(shell_commands)  # Store full command for debugging
+                'command': " ".join(conda_command)  # Store full command for debugging
             }
 
             # Stream output to log file

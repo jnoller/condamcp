@@ -7,15 +7,20 @@ def main():
     FEEDSTOCK_PATH = Path("/Users/jesse/Code/conda-feedstocks/llama.cpp-feedstock")
     BUILD_CONFIG = Path("/Users/jesse/Code/conda-feedstocks/conda_build_config.yaml")
     BUILD_ROOT = Path("/Users/jesse/Code/conda-feedstocks/builds")
+    BUILD_ENV = "build"  # Explicitly specify the build environment name
 
     # Initialize conda build with specific build environment
-    conda_build = CondaBuild(use_shell=True, build_env="build")
+    conda_build = CondaBuild(
+        use_shell=True,
+        build_env=BUILD_ENV  # Now required since default was removed
+    )
 
     # Start the llama.cpp build
     print("\nStarting llama.cpp conda build...")
     print(f"Recipe path: {FEEDSTOCK_PATH}")
     print(f"Config file: {BUILD_CONFIG}")
     print(f"Build root: {BUILD_ROOT}")
+    print(f"Build environment: {BUILD_ENV}")
     
     try:
         build_id = conda_build.build(

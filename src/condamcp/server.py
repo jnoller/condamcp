@@ -139,22 +139,34 @@ def environment_remove(
 
 
 @mcp.tool()
-def build_package(recipe_path: str, **kwargs) -> str:
+def build_package(
+    build_env: str,
+    recipe_path: str,
+    config_file: str | None = None,
+    croot: str | None = None,
+    channels: str | list[str] | None = None,
+    variant_config_files: list[str] | None = None,
+    python_version: str | None = None,
+    numpy_version: str | None = None,
+    output_folder: str | None = None,
+    env: dict[str, str] | None = None
+) -> str:
     """Start building a conda package.
 
     This tool starts an asynchronous conda build process and returns
     a build ID that can be used to check status and logs.
 
     Args:
+        build_env: Name of conda environment to use for build
         recipe_path: Path to recipe directory
-        **kwargs: Additional build arguments including:
-            config_file: Path to conda build config file
-            croot: Build root directory for package
-            channels: List of channels to search for dependencies
-            variant_config_files: List of variant config files
-            python_version: Python version for build
-            numpy_version: NumPy version for build
-            output_folder: Directory to place output package
+        config_file: Path to conda build config file
+        croot: Build root directory for package
+        channels: Channel(s) to search for dependencies (single channel or list)
+        variant_config_files: List of variant config files
+        python_version: Python version for build
+        numpy_version: NumPy version for build
+        output_folder: Directory to place output package
+        env: Dictionary of environment variables to set for build
 
     Returns:
         str: Build ID for tracking the build process or error message
@@ -166,7 +178,17 @@ def build_package(recipe_path: str, **kwargs) -> str:
         "Build recipe with custom build root directory"
     """
     try:
-        build_id = conda_build.build(recipe_path, **kwargs)
+        build_id = conda_build.build(
+            recipe_path=recipe_path,
+            config_file=config_file,
+            croot=croot,
+            channels=channels,
+            variant_config_files=variant_config_files,
+            python_version=python_version,
+            numpy_version=numpy_version,
+            output_folder=output_folder,
+            env=env
+        )
         return f"Build started with ID: {build_id}"
     except ValueError as e:
         return f"Error starting build: {str(e)}"
@@ -198,4 +220,29 @@ def show_build_log(build_id: str, tail: int = 50) -> str:
         str: Build log output
     """
     return conda_build.get_build_log(build_id, tail)
+
+
+@mcp.tool()
+def show_help(command: str = None) -> str:
+    """Show help information for conda commands.
+
+    This tool displays help information for conda commands and subcommands.
+
+    Args:
+        command: The conda command to show help for (e.g., "build", "env create")
+                If not provided, shows general conda help.
+
+    Returns:
+        str: Help text output
+
+    Examples:
+        "Show conda help"
+        "Show help for conda build"
+        "Show help for conda env create"
+        "What are the options for conda build?"
+    """
+    returncode, stdout, stderr = conda.show_help(command)
+    if stderr:
+        return f"Error getting help: {stderr}"
+    return stdout
 

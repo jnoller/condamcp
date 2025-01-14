@@ -252,3 +252,20 @@ class Condacmd(Commandlr):
         if as_json:
             return self._parse_json_response(stdout)
         return stdout
+
+    def show_help(self, command: str = None):
+        """Get help information for conda commands.
+
+        Args:
+            command: The conda command to show help for (e.g., "build", "env create")
+                    If not provided, shows general conda help.
+
+        Returns:
+            tuple: (returncode, stdout, stderr)
+        """
+        if command is None:
+            return self.runcmd(self.binary_path, "help")
+        else:
+            # Split command string into parts and add --help
+            cmd_parts = command.split()
+            return self.runcmd(self.binary_path, *cmd_parts, "--help")
