@@ -6,16 +6,31 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.0.0",
-    "mcp[cli]>=1.0.0"
+    "mcp[cli]>=1.0.0",
+    "psutil",
+    "gputil",
+    "aiofiles"
 ]
 authors = [
     {name = "Your Name", email = "your.email@example.com"}
 ]
 license = { text = "BSD-3-Clause" }
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0"
+]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-condamcp = "condamcp:run_mcp_server"
+condamcp = "condamcp.conda_server:run_conda_server"
+condabuild = "condamcp.condabuild_server:run_build_server"
+sysinfo = "condamcp.sysinfo_server:run_sysinfo_server"
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
