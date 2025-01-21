@@ -926,7 +926,7 @@ async def compare(
         raise  # Re-raise the exception to properly handle it in the MCP framework
 
 @mcp.tool()
-async def get_info(
+async def info(
     ctx: Context,
     all: bool = False,
     base: bool = False,
@@ -1023,7 +1023,7 @@ async def get_info(
         raise  # Re-raise the exception to properly handle it in the MCP framework
 
 @mcp.tool()
-async def search_packages(
+async def search(
     ctx: Context,
     query: Optional[str] = None,
     envs: bool = False,
@@ -1033,10 +1033,16 @@ async def search_packages(
     channels: Optional[List[str]] = None,
     use_local: bool = False,
     override_channels: bool = False,
+    repodata_fn: Optional[List[str]] = None,
+    experimental: Optional[str] = None,
+    no_lock: bool = False,
+    repodata_use_zst: Optional[bool] = None,
+    insecure: bool = False,
     offline: bool = False,
     verbose: bool = False,
     quiet: bool = False,
-    as_json: bool = False
+    as_json: bool = False,
+    use_index_cache: bool = False
 ) -> str:
     """Search for conda packages using the MatchSpec format.
 
@@ -1053,10 +1059,16 @@ async def search_packages(
         channels: Additional channels to search
         use_local: Use locally built packages
         override_channels: Override default channels
+        repodata_fn: Specify file names of repodata on remote server
+        experimental: Enable experimental features ('jlap' or 'lock')
+        no_lock: Disable locking when reading/updating index cache
+        repodata_use_zst: Check for repodata.json.zst
+        insecure: Allow "insecure" SSL connections and transfers
         offline: Work offline (no network access)
         verbose: Show additional output details
         quiet: Do not display progress bar
         as_json: Report all output as json
+        use_index_cache: Use cache of channel index files even if expired
 
     Returns:
         A string containing either:
@@ -1096,10 +1108,16 @@ async def search_packages(
             channels=channels,
             use_local=use_local,
             override_channels=override_channels,
+            repodata_fn=repodata_fn,
+            experimental=experimental,
+            no_lock=no_lock,
+            repodata_use_zst=repodata_use_zst,
+            insecure=insecure,
             offline=offline,
             verbose=verbose,
             quiet=quiet,
             as_json=as_json,
+            use_index_cache=use_index_cache,
             status_callback=callback
         )
         
