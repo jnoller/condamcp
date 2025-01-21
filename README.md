@@ -34,20 +34,20 @@ Built on the Model Context Protocol (MCP) standard:
 The `Conda MCP` server is a wrapper around the `conda` command line tool. It enables natural language interactions with the `conda` command line tool.
 
 Supported Commands:
-:white_check_mark: `conda env`: "list all of my conda environments"
-:white_check_mark: `conda create`: "create an environment called 'experiment' and install numpy and pandas"
-:white_check_mark: `conda remove`: "remove numpy and pandas from the 'experiment' environment"
-:white_check_mark: `conda help`: "can you summarize the help for conda build?"
-:white_check_mark: `conda list`: "list all packages in the 'experiment' environment"
-:white_check_mark: `conda clean`: "I am running out of disk space, please clean up my conda environments"
-:white_check_mark: `conda compare`: "compare the 'experiment' environment to the 'production' environment"
-:white_check_mark: `conda info`: "show me my conda info in json format"
-:white_check_mark: `conda search`: "find me the latest version of numpy"
-:white_check_mark: `conda run`: "run `python -m http.server` in the 'experiment' environment"
-:white_check_mark: `run_in_background`: "install jupyterlab in the 'experiment' environment and start a notebook server in the background"
-:white_check_mark: `conda export`: "export the 'experiment' environment to a YAML file in my '~/data' directory"
-:white_check_mark: `conda install`: "install numpy and pandas in the 'experiment' environment"
-:white_check_mark: `conda upgrade`: "upgrade all of my 'experiment' environment packages to the latest versions"
+* :white_check_mark: `conda env`: "list all of my conda environments"
+* :white_check_mark: `conda create`: "create an environment called 'experiment' and install numpy and pandas"
+* :white_check_mark: `conda remove`: "remove numpy and pandas from the 'experiment' environment"
+* :white_check_mark: `conda help`: "can you summarize the help for conda build?"
+* :white_check_mark: `conda list`: "list all packages in the 'experiment' environment"
+* :white_check_mark: `conda clean`: "I am running out of disk space, please clean up my conda environments"
+* :white_check_mark: `conda compare`: "compare the 'experiment' environment to the 'production' environment"
+* :white_check_mark: `conda info`: "show me my conda info in json format"
+* :white_check_mark: `conda search`: "find me the latest version of numpy"
+* :white_check_mark: `conda run`: "run `python -m http.server` in the 'experiment' environment"
+* :white_check_mark: `run_in_background`: "install jupyterlab in the 'experiment' environment and start a notebook server in the background"
+* :white_check_mark: `conda export`: "export the 'experiment' environment to a YAML file in my '~/data' directory"
+* :white_check_mark: `conda install`: "install numpy and pandas in the 'experiment' environment"
+* :white_check_mark: `conda upgrade`: "upgrade all of my 'experiment' environment packages to the latest versions"
 
 ### Sysinfo MCP
 
@@ -55,12 +55,12 @@ The `Sysinfo MCP` server exposes local system information such as CPU, memory, O
 system information to make better package, package building and conda environment management decisions and recommendations.
 
 Supported Commands:
-:white_check_mark: `get_system_info`: "Please show me my local system information"
+* :white_check_mark: `get_system_info`: "Please show me my local system information"
 :white_check_mark: `get_nvidia_gpu_info`: "Please show me my NVIDIA GPU information"
 
 When used with the Conda MCP server:
 
-:white_check_mark: "Can you recommend the fastest version of pytorch for my system?"
+* :white_check_mark: "Can you recommend the fastest version of pytorch for my system?"
 
 
 ### Conda Build MCP
