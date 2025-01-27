@@ -3,9 +3,7 @@
 from mcp.server.fastmcp import FastMCP, Context
 from pathlib import Path
 from .condabuild import AsyncCondaBuild
-from .utils import get_default_conda_binary
 from .async_cmd import ProcessStatus
-import asyncio
 from typing import Optional, List, Dict
 
 mcp = FastMCP("CondaBuild")
@@ -15,11 +13,12 @@ logs_dir = Path.home() / ".condamcp" / "mcp" / "build_logs"
 logs_dir.mkdir(parents=True, exist_ok=True)
 
 # Initialize conda build wrapper
-conda_build = AsyncCondaBuild(build_env="build", logs_dir=str(logs_dir))
+conda_build = AsyncCondaBuild(log_dir=str(logs_dir))
 
 @mcp.tool()
 async def build(
     ctx: Context,
+    build_env: str,
     recipe_path: str,
     config_file: Optional[str] = None,
     croot: Optional[str] = None,
@@ -92,93 +91,15 @@ async def build(
     no_lock: bool = False,
     repodata_use_zst: Optional[bool] = None,
     env: Optional[Dict[str, str]] = None,
-    verbose: bool = False,
     quiet: bool = False
 ) -> ProcessStatus:
     """Build a conda package from a recipe.
     
-    This tool starts a conda build process and returns a build ID that can be used
+    This tool starts a conda build process and returns a process ID that can be used
     to check the status and logs using get_build_status() and get_build_log().
-    
-    Args:
-        ctx: MCP context for progress reporting
-        recipe_path: Path to recipe directory
-        config_file: Path to conda build config file
-        croot: Build root directory
-        channels: Additional channels to use
-        variant_config_files: Additional variant config files
-        exclusive_config_files: Exclusive config files
-        python_version: Python version for build
-        perl: Perl version for build
-        numpy: NumPy version for build
-        r_base: R version for build
-        lua: Lua version for build
-        bootstrap: Bootstrap conda version
-        append_file: File to append to recipe
-        clobber_file: File to clobber recipe with
-        old_build_string: Use old-style build string
-        use_channeldata: Use channeldata from repodata
-        variants: Additional variants to apply
-        check: Run package tests
-        no_include_recipe: Don't include recipe in package
-        source: Only obtain/extract source
-        test: Run package tests
-        no_test: Don't run package tests
-        build_only: Only run build phase
-        post: Run post-build logic
-        test_run_post: Run post-test logic
-        skip_existing: Skip builds of existing packages
-        keep_old_work: Keep old work directory
-        dirty: Keep build directory
-        debug: Debug build output
-        token: Token for anaconda.org
-        user: User for anaconda.org
-        label: Label for anaconda.org
-        no_force_upload: Don't force upload to anaconda.org
-        zstd_compression_level: ZSTD compression level
-        password: Password for anaconda.org
-        sign: Sign packages
-        sign_with: Key to sign packages with
-        identity: GPG identity to sign packages with
-        repository: Repository to upload to
-        no_activate: Don't activate build environment
-        no_build_id: Don't generate unique build IDs
-        build_id_pat: Build ID pattern
-        verify: Verify package
-        no_verify: Don't verify package
-        strict_verify: Strict package verification
-        output_folder: Output folder
-        no_prefix_length_fallback: Don't allow prefix length fallback
-        prefix_length_fallback: Allow prefix length fallback
-        prefix_length: Length of build prefix
-        no_locking: Don't lock build directory
-        no_remove_work_dir: Don't remove work directory
-        error_overlinking: Error on overlinking
-        no_error_overlinking: Don't error on overlinking
-        error_overdepending: Error on overdepending
-        no_error_overdepending: Don't error on overdepending
-        long_test_prefix: Use long test prefix
-        no_long_test_prefix: Don't use long test prefix
-        keep_going: Keep going after failed build
-        cache_dir: Cache directory
-        no_copy_test_source_files: Don't copy test source files
-        merge_build_host: Merge build and host environments
-        stats_file: Stats file
-        extra_deps: Extra dependencies
-        extra_meta: Extra metadata
-        suppress_variables: Suppress variable output
-        use_local: Use local channel
-        override_channels: Override channels
-        repodata_fn: Repodata filenames
-        experimental: Enable experimental features
-        no_lock: Don't use lockfiles
-        repodata_use_zst: Use zst repodata
-        env: Environment variables
-        verbose: Verbose output
-        quiet: Quiet output
         
     Returns:
-        ProcessStatus: Build status
+        ProcessStatus: Process status object
         
     Examples:
         "Build the package in /path/to/recipe"
@@ -191,6 +112,7 @@ async def build(
         
         # Run the conda build command
         status = await conda_build.build(
+            build_env=build_env,
             recipe_path=recipe_path,
             config_file=config_file,
             croot=croot,
@@ -263,7 +185,6 @@ async def build(
             no_lock=no_lock,
             repodata_use_zst=repodata_use_zst,
             env=env,
-            verbose=verbose,
             quiet=quiet
         )
         
@@ -276,10 +197,24 @@ async def build(
         raise  # Re-raise the exception to properly handle it in the MCP framework
 
 @mcp.tool()
-def get_build_status(build_id: str) -> str:
+def cancel_build(pid: int):
+    """Cancel a running conda build.
+    
+    Args:
+        pid: Process ID of the build to cancel
+    """
+    try:
+        conda_build.kill_process(pid)
+        return f"Build {pid} cancelled successfully"
+    except Exception as e:
+        return f"Failed to cancel build {pid}: {e}"
+
+
+@mcp.tool()
+async def get_build_status(pid: int) -> str:
     """Get the status of a conda build.
     Args:
-        build_id: The build ID returned from build_package
+        pid: The process ID returned from build_package
     Returns:
         str: Build status
 
@@ -288,14 +223,17 @@ def get_build_status(build_id: str) -> str:
         "Check the status of my latest build"
         "What is the status of build 1234567890?"
     """
-    status = conda_build.get_build_status(build_id)
-    return f"Build {build_id} status: {status}"
+    status = await conda_build.get_process(pid)
+    if status['status'] in ['completed', 'failed']:
+        return f"Build {pid} status: {status['status']}"
+    else:
+        return f"Build {pid} is still running"
 
 @mcp.tool()
-def get_build_log(build_id: str, tail: int | None = None) -> str:
+async def get_build_log(pid: int, tail: int | None = None) -> str:
     """Get some or all of the log output from a conda build.
     Args:
-        build_id: The build ID returned from build_package
+        pid: The process ID returned from build_package
         tail: Number of lines to return from end of log (None for all)
     Returns:
         str: Build log output
@@ -305,10 +243,17 @@ def get_build_log(build_id: str, tail: int | None = None) -> str:
         "What is the log for my latest build?"
         "Show the last 100 lines of the log for build 1234567890"
     """
-    return conda_build.get_build_log(build_id, tail)
+    status = await conda_build.get_process(pid)
+    if status['status'] in ['completed', 'failed']:
+        if status.log_file:
+            return await conda_build.get_process_log(pid)
+        else:
+            return f"No log file available for build {pid}"
+    else:
+        return f"Build {pid} is still running"
 
 @mcp.prompt()
-def create_build_environment_prompt(name: str):
+def create_build_environment_prompt(name: str) -> str:
     """Prompt to create a conda environment for package building"""
     prompt = f"""Create a new conda environment called {name} using python3.12 and install these packages:
 * conda-build

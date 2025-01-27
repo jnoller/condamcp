@@ -4,11 +4,20 @@
 Conda command wrapper that uses `commandlr` to build and execute commands.
 """
 
-from .commandlr import Commandlr
 from .async_cmd import AsyncProcessRunner, ProcessStatus
 from .utils import get_default_conda_binary
 import json
-from typing import List, Optional, Callable, Dict, Union, Tuple
+from typing import List, Optional, Callable, Dict, Union, Tuple, Literal
+from enum import Enum
+
+class CondaEnvCommand(str, Enum):
+    """Valid subcommands for conda env"""
+    CONFIG = "config"
+    CREATE = "create"
+    EXPORT = "export"
+    LIST = "list"
+    REMOVE = "remove"
+    UPDATE = "update"
 
 class AsyncCondaCmd(AsyncProcessRunner):
     def __init__(self, *args, **kwargs):
@@ -34,42 +43,71 @@ class AsyncCondaCmd(AsyncProcessRunner):
         except json.JSONDecodeError:
             raise ValueError("Invalid JSON response from conda command")
     
-    async def env(self, command: str, *args, as_json: bool = False, verbose: bool = False, quiet: bool = False, status_callback: Optional[Callable] = None, **kwargs):
+    async def env(
+        self,
+        command: Union[CondaEnvCommand, Literal["config", "create", "export", "list", "remove", "update"]],
+        name: Optional[str] = None,
+        prefix: Optional[str] = None,
+        packages: Optional[List[str]] = None,
+        channels: Optional[List[str]] = None,
+        override_channels: bool = False,
+        use_local: bool = False,
+        as_json: bool = False,
+        quiet: bool = False,
+        verbose: bool = False,
+        offline: bool = False,
+    ) -> ProcessStatus:
         """Execute a conda environment command asynchronously.
+
+        This tool provides access to various conda environment commands. The command output
+        is tracked and logged without modification, preserving any structured data formats.
         
         Args:
-            command: The environment subcommand to run (e.g. "list", "create", "remove", "export", "update", "config")
-            *args: Additional positional arguments for the command
-            as_json (bool): Return output as JSON
-            verbose (bool): Show additional output details
-            quiet (bool): Do not display progress bar
-            status_callback (callable): Optional callback for process status updates
-            **kwargs: Additional keyword arguments specific to each subcommand
+            command: The environment subcommand to run:
+                - config: Configure a conda environment
+                - create: Create an environment based on an environment definition file
+                - export: Export a given environment
+                - list: List all conda environments (alias for `conda info --envs`)
+                - remove: Remove an environment
+                - update: Update the current environment based on environment file
+            name: Name of environment
+            prefix: Full path to environment location (i.e. prefix)
+            packages: List of packages to install in the environment
+            channels: Additional channels to search for packages
+            override_channels: Do not search default or .condarc channels
+            use_local: Use locally built packages
+            as_json: Add --json flag to get JSON formatted output
+            quiet: Do not display progress bar
+            verbose: Show additional output details
+            offline: Work offline (don't connect to the Internet)
             
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing command output
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-                
-        Raises:
-            CommandError: If command validation fails
-            FileNotFoundError: If conda binary not found
-            ValueError: If JSON parsing fails with as_json=True
-            
-        Examples:
-            >>> # List environments
-            >>> await conda.env("list")
-            >>> # Create environment from file
-            >>> await conda.env("create", "-f", "environment.yml", name="myenv")
-            >>> # Remove environment
-            >>> await conda.env("remove", "-n", "myenv")
-            >>> # Export environment
-            >>> await conda.env("export", "-n", "myenv", "-f", "environment.yml")
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         cmd_args = ["env", command]
         
-        # Add common options
+        # Handle environment specification
+        if name:
+            cmd_args.extend(["-n", name])
+        if prefix:
+            cmd_args.extend(["-p", prefix])
+            
+        # Handle package specs
+        if packages:
+            cmd_args.extend(packages)
+            
+        # Handle channels
+        if channels:
+            for channel in channels:
+                cmd_args.extend(["-c", channel])
+        if use_local:
+            cmd_args.append("--use-local")
+        if override_channels:
+            cmd_args.append("--override-channels")
+            
+        # Handle output options
         if as_json:
             cmd_args.append("--json")
         if verbose:
@@ -77,37 +115,70 @@ class AsyncCondaCmd(AsyncProcessRunner):
         if quiet:
             cmd_args.append("-q")
             
-        # Add any additional arguments
-        if args:
-            cmd_args.extend(args)
+        # Handle networking options
+        if offline:
+            cmd_args.append("--offline")
             
         # Handle special cases for specific commands
         if command == "create":
             cmd_args.append("-y")  # Always add -y to avoid prompts for create
             
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, cmd_args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, cmd_args, status_callback=status_callback)
+        # Fork the process and enable logging
+        return await self.fork(
+            self.binary_path,
+            cmd_args
+        )
 
-    async def remove(self, name: Optional[str] = None, prefix: Optional[str] = None, packages: Optional[List[str]] = None, all: bool = False, keep_env: bool = False,
-                    channels: Optional[List[str]] = None, use_local: bool = False, override_channels: bool = False,
-                    repodata_fn: Optional[List[str]] = None, experimental: Optional[str] = None, no_lock: bool = False,
-                    repodata_use_zst: Optional[bool] = None, features: bool = False,
-                    force_remove: bool = False, no_pin: bool = False, solver: Optional[str] = None,
-                    use_index_cache: bool = False, insecure: bool = False, offline: bool = False,
-                    dry_run: bool = False, yes: bool = True, quiet: bool = False, as_json: bool = False,
-                    verbose: bool = False, console: Optional[str] = None, dev: bool = False, status_callback: Optional[Callable] = None):
-        """Remove packages from a conda environment asynchronously."""
+    async def remove(
+        self,
+        name: Optional[str] = None,
+        prefix: Optional[str] = None,
+        packages: Optional[List[str]] = None,
+        all: bool = False,
+        keep_env: bool = False,
+        channels: Optional[List[str]] = None,
+        use_local: bool = False,
+        override_channels: bool = False,
+        repodata_fn: Optional[List[str]] = None,
+        experimental: Optional[str] = None,
+        no_lock: bool = False,
+        repodata_use_zst: Optional[bool] = None,
+        features: bool = False,
+        force_remove: bool = False,
+        no_pin: bool = False,
+        solver: Optional[str] = None,
+        use_index_cache: bool = False,
+        insecure: bool = False,
+        offline: bool = False,
+        dry_run: bool = False,
+        yes: bool = True,
+        quiet: bool = False,
+        as_json: bool = False,
+        verbose: bool = False,
+        console: Optional[str] = None,
+        dev: bool = False,
+        status_callback: Optional[Callable] = None
+    ) -> ProcessStatus:
+        """Remove packages from a conda environment asynchronously.
+        
+        Args:
+            name: Name of environment
+            prefix: Full path to environment location (i.e. prefix)
+            packages: List of packages to remove
+            all: Remove all packages
+            keep_env: Keep the environment
+            channels: Additional channels to search for packages
+            use_local: Use locally built packages
+            override_channels: Do not search default or .condarc channels
+            repodata_fn: Specify file names of repodata on remote server
+            experimental: Enable experimental features ('jlap' or 'lock')
+            no_lock: Disable locking when reading/updating index cache
+        
+        Returns:
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
+        """
         args = ["remove"]
         
         # Handle environment specification
@@ -169,20 +240,8 @@ class AsyncCondaCmd(AsyncProcessRunner):
             args.extend(["--console", console])
         if dev:
             args.append("--dev")
-            
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
+
+        return await self.fork(self.binary_path, args)
 
     async def create(
         self,
@@ -221,7 +280,6 @@ class AsyncCondaCmd(AsyncProcessRunner):
         show_channel_urls: bool = False,
         subdir: Optional[str] = None,
         dev: bool = False,
-        status_callback: Optional[Callable] = None
     ):
         """Create a new conda environment from a list of specified packages.
 
@@ -264,19 +322,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
             show_channel_urls (bool): Show channel urls
             subdir (str, optional): Use packages built for this platform
             dev (bool): Use sys.executable -m conda in wrapper scripts
-            status_callback (callable): Optional callback for process status updates
 
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing command output
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-
-        Examples:
-            >>> # Create an environment with sqlite
-            >>> await conda.create(name="myenv", packages=["sqlite"])
-            >>> # Clone an existing environment
-            >>> await conda.create(name="env2", clone="env1")
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["create"]
         
@@ -371,19 +421,8 @@ class AsyncCondaCmd(AsyncProcessRunner):
         if dev:
             args.append("--dev")
             
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
+        # Fork the process and enable logging
+        return await self.fork(self.binary_path, args)
     
     async def export(
         self,
@@ -399,36 +438,30 @@ class AsyncCondaCmd(AsyncProcessRunner):
         console: Optional[str] = None,
         verbose: bool = False,
         quiet: bool = False,
-        status_callback: Optional[Callable] = None
     ):
         """Export a given environment.
         
+        This tool exports the specification of a conda environment, which can be used
+        to recreate the environment on another system.
+        
         Args:
-            name (str, optional): Name of environment
-            prefix (str, optional): Full path to environment location (i.e. prefix)
-            file (str, optional): File name or path for the exported environment
-            channels (list[str], optional): Additional channels to include in the export
-            override_channels (bool): Do not include .condarc channels
-            no_builds (bool): Remove build specification from dependencies
-            ignore_channels (bool): Do not include channel names with package names
-            from_history (bool): Build environment spec from explicit specs in history
-            as_json (bool): Report all output as json
-            console (str, optional): Select the backend for output rendering
-            verbose (bool): Show additional output details
-            quiet (bool): Do not display progress bar
-            status_callback (callable): Optional callback for process status updates
+            name: Name of environment
+            prefix: Full path to environment location (i.e. prefix)
+            file: File name or path for the exported environment
+            channels: Additional channels to include in the export
+            override_channels: Do not include .condarc channels
+            no_builds: Remove build specification from dependencies
+            ignore_channels: Do not include channel names with package names
+            from_history: Build environment spec from explicit specs in history
+            as_json: Report all output as json
+            console: Select the backend for output rendering
+            verbose: Show additional output details
+            quiet: Do not display progress bar
             
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing environment specification
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-            
-        Examples:
-            >>> # Export current environment
-            >>> await conda.export()
-            >>> # Export to a file
-            >>> await conda.export(file="environment.yml")
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["export"]
 
@@ -467,21 +500,9 @@ class AsyncCondaCmd(AsyncProcessRunner):
         if quiet:
             args.append("-q")
 
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
-
-    async def help(self, command: Optional[str] = None, status_callback: Optional[Callable] = None) -> ProcessStatus:
+        return await self.fork(self.binary_path, args)
+    
+    async def help(self, command: Optional[str] = None) -> ProcessStatus:
         """Get help information for conda commands.
 
         Args:
@@ -490,15 +511,9 @@ class AsyncCondaCmd(AsyncProcessRunner):
             status_callback (callable): Optional callback for process status updates
 
         Returns:
-            ProcessStatus: The process status containing help text output
-
-        Examples:
-            >>> # Get general conda help
-            >>> await conda.help()
-            >>> # Get help for specific command
-            >>> await conda.help("create")
-            >>> # Get help for subcommand
-            >>> await conda.help("env create")
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = []
         if command:
@@ -506,7 +521,7 @@ class AsyncCondaCmd(AsyncProcessRunner):
             args.extend(command.split())
         args.append("--help")
 
-        return await self.execute(self.binary_path, args, status_callback=status_callback)
+        return await self.fork(self.binary_path, args)
 
     async def clean(
         self,
@@ -523,9 +538,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
         as_json: bool = False,
         verbose: bool = False,
         console: Optional[str] = None,
-        status_callback: Optional[Callable] = None
     ):
         """Remove unused packages and caches.
+
+        This tool removes unused conda packages and caches to free up disk space.
+        It can clean various types of conda caches and temporary files.
 
         Args:
             all: Remove index cache, lock files, unused cache packages, tarballs, and logfiles
@@ -544,16 +561,9 @@ class AsyncCondaCmd(AsyncProcessRunner):
             status_callback: Optional callback for process status updates
 
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing command output
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-
-        Examples:
-            >>> # Clean all caches
-            >>> await conda.clean(all=True)
-            >>> # Remove only tarballs
-            >>> await conda.clean(tarballs=True)
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["clean"]
         
@@ -587,20 +597,8 @@ class AsyncCondaCmd(AsyncProcessRunner):
             args.append("-q")
         if console:
             args.extend(["--console", console])
-            
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
+
+        return await self.fork(self.binary_path, args)
 
     async def upgrade(
         self,
@@ -642,19 +640,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
         download_only: bool = False,
         show_channel_urls: bool = False,
         file: Optional[str] = None,
-        status_callback: Optional[Callable] = None
     ):
         """Update conda packages to the latest compatible version.
 
-        This command accepts a list of package names and updates them to the latest
-        versions that are compatible with all other packages in the environment.
-
-        Conda attempts to install the newest versions of the requested packages. To
-        accomplish this, it may update some packages that are already installed, or
-        install additional packages. To prevent existing packages from updating,
-        use the freeze_installed option. This may force conda to install older
-        versions of the requested packages, and it does not prevent additional
-        dependency packages from being installed.
+        This tool updates packages in a conda environment to their latest compatible versions.
+        It handles dependency resolution and ensures package compatibility is maintained.
 
         Args:
             packages: List of packages to update in the conda environment
@@ -693,23 +683,12 @@ class AsyncCondaCmd(AsyncProcessRunner):
             verbose: Show additional output details
             console: Select the backend for output rendering
             download_only: Solve environment and populate caches but don't install
-            show_channel_urls: Show channel urls
             file: Read package versions from the given file
-            status_callback: Optional callback for process status updates
 
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing command output
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-
-        Examples:
-            >>> # Update scipy in current environment
-            >>> await conda.upgrade(packages=["scipy"])
-            >>> # Update all packages in specific environment
-            >>> await conda.upgrade(name="myenv", update_all=True)
-            >>> # Update packages from file
-            >>> await conda.upgrade(file="requirements.txt")
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["update"]
         
@@ -805,20 +784,8 @@ class AsyncCondaCmd(AsyncProcessRunner):
             args.append("--download-only")
         if show_channel_urls:
             args.append("--show-channel-urls")
-            
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
+
+        return await self.fork(self.binary_path, args)
 
     async def list(
         self,
@@ -839,9 +806,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
         as_json: bool = False,
         verbose: bool = False,
         quiet: bool = False,
-        status_callback: Optional[Callable] = None
     ):
         """List installed packages in a conda environment.
+
+        This tool displays all packages installed in the specified (or current) conda environment.
+        It supports various output formats and filtering options.
 
         Args:
             name: Name of environment
@@ -861,25 +830,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
             as_json: Report all output as json
             verbose: Show additional output details
             quiet: Do not display progress bar
-            status_callback: Optional callback for process status updates
 
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing command output
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-
-        Examples:
-            >>> # List all packages in current environment
-            >>> await conda.list()
-            >>> # List packages in specific environment
-            >>> await conda.list(name="myenv")
-            >>> # List python packages with channel URLs
-            >>> await conda.list(regex="^python", show_channel_urls=True)
-            >>> # Export package list for future use
-            >>> await conda.list(export=True)
-            >>> # List with explicit URLs and SHA256 hashes
-            >>> await conda.list(explicit=True, sha256=True)
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["list"]
         
@@ -923,77 +878,7 @@ class AsyncCondaCmd(AsyncProcessRunner):
         if quiet:
             args.append("-q")
             
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
-
-    async def run_in_background(
-        self,
-        executable_call: List[str],
-        name: Optional[str] = None,
-        prefix: Optional[str] = None,
-        verbose: bool = False,
-        dev: bool = False,
-        debug_wrapper_scripts: bool = False,
-        cwd: Optional[str] = None,
-        no_capture_output: bool = False
-    ) -> ProcessStatus:
-        """Run an executable in a conda environment in the background.
-        
-        Similar to run() but returns immediately without waiting for completion.
-        Output is logged to files but not captured in memory.
-        
-        Args:
-            executable_call: List containing executable name and any additional arguments
-            name: Name of environment
-            prefix: Full path to environment location (i.e. prefix)
-            verbose: Show additional output details
-            dev: Use sys.executable -m conda in wrapper scripts
-            debug_wrapper_scripts: Print debugging information to stderr
-            cwd: Current working directory for command execution
-            no_capture_output: Don't capture stdout/stderr (live stream)
-            
-        Returns:
-            ProcessStatus with returncode=None since command is still running
-            
-        Examples:
-            >>> # Run jupyter notebook server in background
-            >>> await conda.run_in_background(["jupyter", "notebook"], name="myenv")
-        """
-        args = ["run"]
-        
-        # Handle environment specification
-        if name:
-            args.extend(["-n", name])
-        if prefix:
-            args.extend(["-p", prefix])
-            
-        # Handle options
-        if verbose:
-            args.append("-v")
-        if dev:
-            args.append("--dev")
-        if debug_wrapper_scripts:
-            args.append("--debug-wrapper-scripts")
-        if cwd:
-            args.extend(["--cwd", cwd])
-        if no_capture_output:
-            args.append("--no-capture-output")
-            
-        # Add executable and its arguments
-        args.extend(executable_call)
-            
-        return await self.fork(self.binary_path, args, cwd=cwd)
+        return await self.fork(self.binary_path, args)
     
     async def run(
         self,
@@ -1009,6 +894,9 @@ class AsyncCondaCmd(AsyncProcessRunner):
     ):
         """Run an executable in a conda environment.
 
+        This tool allows running commands or executables within a specific conda environment.
+        The command is executed asynchronously and its output is tracked.
+
         Args:
             executable_call: List containing executable name and any additional arguments
             name: Name of environment
@@ -1021,16 +909,9 @@ class AsyncCondaCmd(AsyncProcessRunner):
             status_callback: Optional callback for process status updates
 
         Returns:
-            If no_capture_output=False:
-                ProcessStatus with stdout containing command output
-            If no_capture_output=True:
-                ProcessStatus with live streamed output
-
-        Examples:
-            >>> # Run python in specific environment
-            >>> await conda.run(["python", "--version"], name="myenv")
-            >>> # Execute script with arguments
-            >>> await conda.run(["python", "script.py", "--arg1"], name="py39")
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["run"]
         
@@ -1055,7 +936,7 @@ class AsyncCondaCmd(AsyncProcessRunner):
         # Add executable and its arguments
         args.extend(executable_call)
             
-        return await self.execute(self.binary_path, args, status_callback=status_callback)
+        return await self.fork(self.binary_path, args)
 
     async def install(
         self,
@@ -1099,70 +980,58 @@ class AsyncCondaCmd(AsyncProcessRunner):
         download_only: bool = False,
         show_channel_urls: bool = False,
         dev: bool = False,
-        status_callback: Optional[Callable] = None
     ):
         """Install a list of packages into a specified conda environment.
 
-        This command accepts a list of package specifications (e.g, bitarray=0.8)
-        and installs a set of packages consistent with those specifications and
-        compatible with the underlying environment.
+        This tool installs packages into a conda environment based on package specifications.
+        It ensures compatibility between packages and handles dependencies appropriately.
 
         Args:
-            name (str, optional): Name of environment
-            prefix (str, optional): Full path to environment location (i.g. prefix)
-            packages (list[str], optional): List of packages to install or update
-            revision (str, optional): Revert to the specified REVISION
-            file (str, optional): Read package versions from the given file
-            channels (list[str], optional): Additional channels to search for packages
-            use_local (bool): Use locally built packages (identical to '-c local')
-            override_channels (bool): Do not search default or .condarc channels
-            repodata_fn (list[str], optional): Specify file names of repodata on remote server
-            experimental (str, optional): Enable experimental features ('jlap' or 'lock')
-            no_lock (bool): Disable locking when reading/updating index cache
-            repodata_use_zst (bool, optional): Check for repodata.json.zst
-            strict_channel_priority (bool): Packages in lower priority channels are not considered
-            no_channel_priority (bool): Package version takes precedence over channel priority
-            no_deps (bool): Do not install dependencies
-            only_deps (bool): Only install dependencies
-            no_pin (bool): Ignore pinned file
-            solver (str, optional): Choose solver backend ('classic' or 'libmamba')
-            force_reinstall (bool): Ensure that any user-requested package is reinstalled
-            freeze_installed (bool): Do not update or change already-installed dependencies
-            update_deps (bool): Update dependencies that have available updates
-            satisfied_skip_solve (bool): Exit early if the requested specs are satisfied
-            update_all (bool): Update all installed packages in the environment
-            update_specs (bool): Update based on provided specifications
-            copy (bool): Install all packages using copies instead of hard- or soft-linking
-            no_shortcuts (bool): Don't install start menu shortcuts
-            shortcuts_only (list[str], optional): Install shortcuts only for specified packages
-            clobber (bool): Allow clobbering of overlapping file paths within packages
-            use_index_cache (bool): Use cache of channel index files even if expired
-            insecure (bool): Allow "insecure" SSL connections and transfers
-            offline (bool): Offline mode, don't connect to the Internet
-            dry_run (bool): Only display what would have been done
-            yes (bool): Do not ask for confirmation
-            quiet (bool): Do not display progress bar
-            as_json (bool): Report all output as json
-            verbose (bool): Show additional output details
-            console (str, optional): Select the backend for output rendering
-            download_only (bool): Solve environment and populate caches but don't install
-            show_channel_urls (bool): Show channel urls
-            dev (bool): Use sys.executable -m conda in wrapper scripts
-            status_callback (callable): Optional callback for process status updates
+            name: Name of environment
+            prefix: Full path to environment location (i.e. prefix)
+            packages: List of packages to install or update
+            revision: Revert to the specified REVISION
+            file: Read package versions from the given file
+            channels: Additional channels to search for packages
+            use_local: Use locally built packages (identical to '-c local')
+            override_channels: Do not search default or .condarc channels
+            repodata_fn: Specify file names of repodata on remote server
+            experimental: Enable experimental features ('jlap' or 'lock')
+            no_lock: Disable locking when reading/updating index cache
+            repodata_use_zst: Check for repodata.json.zst
+            strict_channel_priority: Packages in lower priority channels are not considered
+            no_channel_priority: Package version takes precedence over channel priority
+            no_deps: Do not install dependencies
+            only_deps: Only install dependencies
+            no_pin: Ignore pinned file
+            solver: Choose solver backend ('classic' or 'libmamba')
+            force_reinstall: Ensure that any user-requested package is reinstalled
+            freeze_installed: Do not update or change already-installed dependencies
+            update_deps: Update dependencies that have available updates
+            satisfied_skip_solve: Exit early if the requested specs are satisfied
+            update_all: Update all installed packages in the environment
+            update_specs: Update based on provided specifications
+            copy: Install all packages using copies instead of hard- or soft-linking
+            no_shortcuts: Don't install start menu shortcuts
+            shortcuts_only: Install shortcuts only for specified packages
+            clobber: Allow clobbering of overlapping file paths within packages
+            use_index_cache: Use cache of channel index files even if expired
+            insecure: Allow "insecure" SSL connections and transfers
+            offline: Offline mode, don't connect to the Internet
+            dry_run: Only display what would have been done
+            yes: Do not ask for confirmation
+            quiet: Do not display progress bar
+            as_json: Report all output as json
+            verbose: Show additional output details
+            console: Select the backend for output rendering
+            download_only: Solve environment and populate caches but don't install
+            show_channel_urls: Show channel urls
+            dev: Use sys.executable -m conda in wrapper scripts
 
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing command output
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-
-        Examples:
-            >>> # Install scipy in current environment
-            >>> await conda.install(packages=["scipy"])
-            >>> # Install packages in specific environment
-            >>> await conda.install(name="myenv", packages=["scipy", "curl", "wheel"])
-            >>> # Install specific version of python
-            >>> await conda.install(prefix="path/to/myenv", packages=["python=3.11"])
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["install"]
         
@@ -1264,20 +1133,9 @@ class AsyncCondaCmd(AsyncProcessRunner):
         # Handle development options
         if dev:
             args.append("--dev")
-            
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
+        
+        return await self.fork(self.binary_path, args)
+
 
     async def compare(
         self,
@@ -1288,9 +1146,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
         quiet: bool = False,
         as_json: bool = False,
         console: Optional[str] = None,
-        status_callback: Optional[Callable] = None
     ) -> ProcessStatus:
         """Compare packages between conda environments.
+
+        This tool compares packages in an environment against those specified in an environment file.
+        It helps identify differences in package versions and specifications.
 
         Args:
             file: Path to the environment file to compare against
@@ -1300,16 +1160,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
             quiet: Do not display progress bar
             as_json: Report all output as json
             console: Select the backend for output rendering
-            status_callback: Optional callback for process status updates
 
         Returns:
-            ProcessStatus: The process status containing comparison output
-
-        Examples:
-            >>> # Compare current environment with environment.yml
-            >>> await conda.compare("environment.yml")
-            >>> # Compare specific environment with environment file
-            >>> await conda.compare("path/to/environment.yml", name="myenv")
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["compare"]
 
@@ -1332,7 +1187,7 @@ class AsyncCondaCmd(AsyncProcessRunner):
         if console:
             args.extend(["--console", console])
 
-        return await self.execute(self.binary_path, args, status_callback=status_callback)
+        return await self.fork(self.binary_path, args)
 
     async def info(
         self,
@@ -1344,9 +1199,12 @@ class AsyncCondaCmd(AsyncProcessRunner):
         verbose: bool = False,
         quiet: bool = False,
         as_json: bool = False,
-        status_callback: Optional[Callable] = None
     ) -> Union[ProcessStatus, Tuple[ProcessStatus, Dict]]:
         """Display information about current conda install.
+
+        This tool provides detailed information about the conda installation and environments.
+        It can show various aspects of the installation including environment paths, system variables,
+        and channel configurations.
 
         Args:
             all: Show all information
@@ -1357,19 +1215,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
             verbose: Show additional output details
             quiet: Do not display progress bar
             as_json: Report all output as json
-            status_callback: Optional callback for process status updates
 
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing command output
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-
-        Examples:
-            >>> # Get all conda info
-            >>> await conda.info(all=True)
-            >>> # Get environment list
-            >>> await conda.info(envs=True)
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["info"]
         
@@ -1393,19 +1243,7 @@ class AsyncCondaCmd(AsyncProcessRunner):
         if as_json:
             args.append("--json")
 
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
+        return await self.fork(self.binary_path, args)
 
     async def search(
         self,
@@ -1427,9 +1265,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
         quiet: bool = False,
         as_json: bool = False,
         use_index_cache: bool = False,
-        status_callback: Optional[Callable] = None
     ) -> Union[ProcessStatus, Tuple[ProcessStatus, Dict]]:
         """Search for conda packages using the MatchSpec format.
+
+        This tool searches for packages in conda channels using flexible matching.
+        It can search in all environments and provide detailed package information.
 
         Args:
             query: Search query in MatchSpec format
@@ -1450,21 +1290,11 @@ class AsyncCondaCmd(AsyncProcessRunner):
             quiet: Do not display progress bar
             as_json: Report all output as json
             use_index_cache: Use cache of channel index files even if expired
-            status_callback: Optional callback for process status updates
 
         Returns:
-            If as_json=False:
-                ProcessStatus with stdout containing command output
-            If as_json=True:
-                tuple: (ProcessStatus, dict) where dict is the parsed JSON output
-
-        Examples:
-            >>> # Search for a package
-            >>> await conda.search("numpy")
-            >>> # Search with detailed info
-            >>> await conda.search("python", info=True)
-            >>> # Search in specific channels
-            >>> await conda.search("scipy", channels=["conda-forge"])
+            ProcessStatus object for tracking the command execution. The caller can use
+            get_command_status(pid) to check status and get_command_log(pid) to retrieve the raw
+            command output.
         """
         args = ["search"]
         
@@ -1518,32 +1348,4 @@ class AsyncCondaCmd(AsyncProcessRunner):
         if as_json:
             args.append("--json")
 
-        # For JSON output, we need to accumulate all the output
-        if as_json:
-            output = []
-            def json_callback(status: ProcessStatus):
-                if status.stdout:
-                    output.append(status.stdout)
-                if status_callback:
-                    status_callback(status)
-            
-            status = await self.execute(self.binary_path, args, status_callback=json_callback)
-            return await self._parse_json_output(status, output)
-        else:
-            return await self.execute(self.binary_path, args, status_callback=status_callback)
-
-class Condacmd(Commandlr):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.binary_path = get_default_conda_binary()
-
-    def _parse_json_response(self, response):
-        """Parse a JSON response from a conda command"""
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError:
-            raise ValueError("Invalid JSON response from conda command")
-    
-    def env(self, *args, **kwargs):
-        """Run a conda environment command."""
-        return self.runcmd(self.binary_path, "env", *args, **kwargs)
+        return await self.fork(self.binary_path, args)

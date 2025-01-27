@@ -6,45 +6,36 @@ Conda build command wrapper that uses AsyncProcessRunner to build and execute co
 import os
 import time
 from pathlib import Path
-from datetime import datetime
-import tempfile
-import json
-from typing import Callable, Optional, List, Dict, Union, Tuple, Any
-from .async_cmd import AsyncProcessRunner, ProcessStatus
-from .utils import get_default_conda_binary
+from typing import Callable, Optional, List, Dict, Union, Any
+from .async_cmd import ProcessStatus
+from .condacmd import AsyncCondaCmd
 
-class AsyncCondaBuild(AsyncProcessRunner):
-    def __init__(self, build_env: Optional[str] = None, logs_dir: Optional[str] = None):
+class AsyncCondaBuild(AsyncCondaCmd):
+    def __init__(self, log_dir: Optional[str] = None, *args, **kwargs):
         """Initialize async conda build wrapper with default settings.
         
         Args:
-            build_env: Name of conda environment containing conda-build
-            logs_dir: Directory for build logs (default: system temp directory)
+            log_dir: Directory for build logs (default: system temp directory)
+            *args: Additional positional arguments passed to AsyncCondaCmd
+            **kwargs: Additional keyword arguments passed to AsyncCondaCmd
         """
-        # Use provided logs directory or create one in system temp
-        if logs_dir:
-            self.build_logs_dir = Path(logs_dir)
-        else:
-            temp_dir = Path(tempfile.gettempdir())
-            self.build_logs_dir = temp_dir / "conda_build_logs"
-        
-        # Create logs directory if it doesn't exist
-        self.build_logs_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Initialize AsyncProcessRunner with the log directory
-        super().__init__(log_dir=str(self.build_logs_dir))
-        
-        self.binary_path = get_default_conda_binary()
-        self.build_env = build_env
+        super().__init__(log_dir=log_dir, *args, **kwargs)
         self.default_args = [
             "--no-anaconda-upload",
             "--error-overlinking"
         ]
-        self.active_builds: Dict[str, ProcessStatus] = {}
 
-    def _get_log_file(self, build_id: str) -> Path:
-        """Get the log file path for a build."""
-        return self.build_logs_dir / f"build_{build_id}.log"
+    async def _validate_build_env(self, build_env: str) -> str:
+        """Validate that the build environment exists.
+        
+        Args:
+            build_env: Name of conda environment containing conda-build
+        """
+        status = await self.env("list", as_json=True)
+        await self.wait_for_command(status.pid)
+        env_list = self.get_json_response(status.pid)
+        if build_env not in env_list:
+            raise ValueError(f"Build environment {build_env} not found")
 
     def _validate_paths(self, recipe_path: str, config_file: Optional[str] = None, croot: Optional[str] = None) -> List[str]:
         """Validate that all required paths exist.
@@ -73,6 +64,7 @@ class AsyncCondaBuild(AsyncProcessRunner):
     async def build(
         self,
         recipe_path: str,
+        build_env: str,
         config_file: Optional[str] = None,
         croot: Optional[str] = None,
         channels: Optional[Union[str, List[str]]] = None,
@@ -232,6 +224,9 @@ class AsyncCondaBuild(AsyncProcessRunner):
         errors = self._validate_paths(recipe_path, config_file, croot)
         if errors:
             raise ValueError("\n".join(errors))
+        
+        # Validate build environment exists
+        await self._validate_build_env(build_env)
 
         # Construct base args
         args = []
@@ -419,15 +414,12 @@ class AsyncCondaBuild(AsyncProcessRunner):
         args.extend(self.default_args)
 
         # Set up environment and command
-        if self.build_env:
+        if build_env:
             # When using conda run, we need: conda run -n ENV conda build ARGS
-            args = ["run", "-n", self.build_env, "conda", "build"] + args
+            args = ["run", "-n", build_env, "conda", "build"] + args
         else:
             # Direct conda build: conda build ARGS
             args = ["build"] + args
-
-        # Generate unique build ID using timestamp and recipe name
-        build_id = f"{int(time.time())}_{os.path.basename(recipe_path)}"
 
         # Fork the build process
         cwd = os.path.dirname(config_file) if config_file else None
@@ -439,11 +431,10 @@ class AsyncCondaBuild(AsyncProcessRunner):
             enable_logging=True
         )
 
-        # Store the ProcessStatus
-        self.active_builds[build_id] = status
+        # Add build_id to status for reference
+        build_id = f"{int(time.time())}_{os.path.basename(recipe_path)}"
+        status.build_id = build_id
 
-        # Return both status and build_id
-        status.build_id = build_id  # Add build_id to status for convenience
         return status
 
     async def check_build_status(self, build_id: str) -> Dict[str, Any]:
@@ -455,20 +446,15 @@ class AsyncCondaBuild(AsyncProcessRunner):
         Returns:
             dict: Build status information including current state and return code if completed
         """
-        if build_id not in self.active_builds:
-            return {'status': 'not_found'}
+        # Find the process status with matching build_id
+        for pid, status in self.get_active_commands().items():
+            if hasattr(status, 'build_id') and status.build_id == build_id:
+                # Use AsyncProcessRunner's status tracking
+                cmd_status = self.get_command_status(pid)
+                cmd_status['build_id'] = build_id  # Add build_id to response
+                return cmd_status
 
-        status = self.active_builds[build_id]
-        
-        # Update return code from process
-        if status.process:
-            status.return_code = status.process.returncode
-
-        return {
-            'status': 'completed' if status.return_code == 0 else 'failed' if status.return_code is not None else 'running',
-            'return_code': status.return_code,
-            'pid': status.pid
-        }
+        return {'status': 'not_found', 'build_id': build_id}
 
     def get_build_log(self, build_id: str, tail: Optional[int] = None) -> str:
         """Get the log output from a build process.
@@ -480,34 +466,10 @@ class AsyncCondaBuild(AsyncProcessRunner):
         Returns:
             str: Build log output
         """
-        if build_id not in self.active_builds:
-            return "Build ID not found"
+        # Find the process status with matching build_id
+        for pid, status in self.get_active_commands().items():
+            if hasattr(status, 'build_id') and status.build_id == build_id:
+                # Use AsyncProcessRunner's log retrieval
+                return self.get_command_log(pid, tail)
 
-        status = self.active_builds[build_id]
-        
-        # Try both split and combined log files
-        log_content = ""
-        
-        # Check stdout log
-        if status.stdout_log_file and os.path.exists(status.stdout_log_file):
-            with open(status.stdout_log_file) as f:
-                log_content += "=== STDOUT ===\n" + f.read() + "\n"
-                
-        # Check stderr log
-        if status.stderr_log_file and os.path.exists(status.stderr_log_file):
-            with open(status.stderr_log_file) as f:
-                log_content += "=== STDERR ===\n" + f.read() + "\n"
-                
-        # Check combined log
-        if status.log_file and os.path.exists(status.log_file):
-            with open(status.log_file) as f:
-                log_content = f.read()
-                
-        if not log_content:
-            return "Log file not found"
-            
-        if tail:
-            lines = log_content.splitlines()[-tail:]
-            return '\n'.join(lines)
-            
-        return log_content
+        return "Build ID not found"

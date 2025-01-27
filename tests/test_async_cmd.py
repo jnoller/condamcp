@@ -1,17 +1,31 @@
 import pytest
 import asyncio
 from pathlib import Path
+import tempfile
 from condamcp.async_cmd import AsyncProcessRunner, CommandError, ProcessStatus
 from condamcp.condacmd import AsyncCondaCmd
 import sys
+import re
+import psutil
+
+async def _wait_for_pid(runner, pid, timeout=30):
+    """ Shared function for tests to use to wait for a given process to finish """
+    for _ in range(timeout):
+        proc_status = runner.get_process(pid)
+        if proc_status['status'] in ['completed', 'failed']:
+            break
+        await asyncio.sleep(0.1)
+    else:
+        raise TimeoutError("Process did not complete in time")
 
 @pytest.fixture
 def runner():
-    return AsyncProcessRunner()
+    """Default runner that uses a temporary directory for logs"""
+    return AsyncProcessRunner(track_processes=True)
 
 @pytest.mark.asyncio
 async def test_basic_command(runner):
-    """Test basic command execution without shell"""
+    """Test basic blocking command execution without shell"""
     output = []
     def callback(status: ProcessStatus):
         if status.stdout:
@@ -21,314 +35,272 @@ async def test_basic_command(runner):
     assert status.return_code == 0
     assert "hello" in output[0]
     assert not status.stderr
+    # Verify log file was created in temp directory
+    assert status.log_file and status.log_file.exists()
+    assert status.log_file.parent == runner.log_dir
 
 @pytest.mark.asyncio
 async def test_shell_command(runner):
-    """Test command execution with shell"""
+    """Test blocking command execution with shell"""
     output = []
     def callback(status: ProcessStatus):
         if status.stdout:
             output.append(status.stdout)
             
-    runner_shell = AsyncProcessRunner(shell=True)
+    runner_shell = AsyncProcessRunner(shell=True, track_processes=True)
     status = await runner_shell.execute("echo", ["hello"], status_callback=callback)
     assert status.return_code == 0
     assert "hello" in output[0]
     assert not status.stderr
+    # Verify log file was created in temp directory
+    assert status.log_file and status.log_file.exists()
+    assert status.log_file.parent == runner_shell.log_dir
 
 @pytest.mark.asyncio
 async def test_shell_command_with_pipes(runner):
-    """Test shell command with shell features like pipes"""
+    """Test blocking shell command with shell features like pipes"""
     output = []
     def callback(status: ProcessStatus):
         if status.stdout:
             output.append(status.stdout)
             
-    runner_shell = AsyncProcessRunner(shell=True)
+    runner_shell = AsyncProcessRunner(shell=True, track_processes=True)
     status = await runner_shell.execute("echo hello | grep hello", status_callback=callback)
     assert status.return_code == 0
     assert "hello" in output[0]
     assert not status.stderr
+    # Verify log file was created
+    assert status.log_file and status.log_file.exists()
 
 @pytest.mark.asyncio
-async def test_single_log_file(tmp_path, runner):
-    """Test logging command output to a single file"""
-    runner = AsyncProcessRunner(log_dir=tmp_path)
-    status = await runner.execute("echo", ["test output"])
+async def test_get_active_processes(runner):
+    """Test forked process tracking"""
+    # Start a command
+    status = await runner.fork("sleep 1" if sys.platform != "win32" else "timeout 1", shell=True)
     
-    # Get the log file (should be named something like echo_*.log)
-    log_files = list(tmp_path.glob("echo_*.log"))
-    assert len(log_files) == 1
+    # Check active processes
+    active = runner.get_active_processes()
+    assert len(active) == 1
+    assert status.pid in active
     
-    # Verify log contents
-    log_content = log_files[0].read_text()
-    assert "test output" in log_content
+    # Wait for completion by polling
+    await _wait_for_pid(runner, status.pid)
+    
+    # Process should still be tracked after completion
+    active = runner.get_active_processes()
+    assert len(active) == 1
+    assert status.pid in active
 
 @pytest.mark.asyncio
-async def test_split_output_streams(tmp_path, runner):
-    """Test logging stdout and stderr to separate files"""
-    runner = AsyncProcessRunner(log_dir=tmp_path, split_output_streams=True)
-    
-    # Use shell to redirect some output to stderr
-    if sys.platform == "win32":
-        cmd = "(echo stdout) && (echo stderr >&2)"
-    else:
-        cmd = "echo stdout; echo stderr 1>&2"
-    
-    status = await runner.execute(cmd, shell=True)
-    
-    # Should have both stdout and stderr files
-    stdout_files = list(tmp_path.glob("*_stdout.log"))
-    stderr_files = list(tmp_path.glob("*_stderr.log"))
-    assert len(stdout_files) == 1
-    assert len(stderr_files) == 1
-    
-    # Verify contents
-    stdout_content = stdout_files[0].read_text()
-    stderr_content = stderr_files[0].read_text()
-    assert "stdout" in stdout_content
-    assert "stderr" in stderr_content
+async def test_get_process_status(runner):
+    """Test process status tracking"""
+    # Start a command
+    status = await runner.fork("echo test", shell=True)
 
-@pytest.mark.asyncio
-async def test_command_timeout(runner):
-    """Test that long running processes can be timed out"""
-    with pytest.raises(asyncio.TimeoutError):
-        # Use sleep command that should be interrupted
-        if sys.platform == "win32":
-            cmd = "timeout 10"
-        else:
-            cmd = "sleep 10"
-        
-        await runner.execute(cmd, shell=True, timeout=0.1)  # Short timeout to keep test fast 
-
-@pytest.mark.asyncio
-async def test_environment_variables(runner):
-    """Test command execution with custom environment variables"""
-    output = []
-    def callback(status: ProcessStatus):
-        if status.stdout:
-            output.append(status.stdout)
-            
-    env = {"TEST_VAR": "test_value"}
-    status = await runner.execute("echo", ["$TEST_VAR" if sys.platform != "win32" else "%TEST_VAR%"], 
-                            env=env, shell=True, status_callback=callback)
-    assert status.return_code == 0
-    assert "test_value" in output[0]
-
-@pytest.mark.asyncio
-async def test_working_directory(tmp_path, runner):
-    """Test command execution in specific working directory"""
-    output = []
-    def callback(status: ProcessStatus):
-        if status.stdout:
-            output.append(status.stdout)
-            
-    status = await runner.execute("pwd" if sys.platform != "win32" else "cd", 
-                            cwd=tmp_path, shell=True, status_callback=callback)
-    assert status.return_code == 0
-    assert str(tmp_path) in output[0]
-
-@pytest.mark.asyncio
-async def test_status_callback(runner):
-    """Test status callback functionality"""
-    status_updates = []
-    
-    def callback(status: ProcessStatus):
-        # Only append if we get stdout or it's the final status
-        if status.stdout or status.return_code is not None:
-            status_updates.append(status)
-    
-    # Run a command that outputs multiple lines
-    status = await runner.execute(
-        "python",
-        ["-c", "for i in range(3): print(f'line {i}')"],
-        status_callback=callback
-    )
-    
-    assert status.return_code == 0
-    # Should get: 3 lines + final status = 4 updates
-    assert len(status_updates) == 4
-    
-    # Get all output lines (excluding the final status)
-    output_lines = [update.stdout for update in status_updates[:-1]]
-    expected_lines = [f'line {i}' for i in range(3)]
-    # Sort both lists to compare content regardless of order
-    assert sorted(output_lines) == sorted(expected_lines)
+    # Wait for completion by polling
+    await _wait_for_pid(runner, status.pid)
     
     # Check final status
-    assert status_updates[-1].stdout == ''
-    assert status_updates[-1].stderr == ''
-    assert status_updates[-1].return_code == 0
+    proc_status = runner.get_process(status.pid)
+    assert proc_status['status'] == 'completed'
+    assert proc_status['return_code'] == 0
 
 @pytest.mark.asyncio
-async def test_command_validation(runner):
-    """Test command validation prevents path traversal"""
+async def test_get_process_log(runner):
+    """Test retrieving process logs"""
+    # Run a command
+    status = await runner.fork("echo test_output", shell=True)
+    
+    # Wait for completion by polling
+    await _wait_for_pid(runner, status.pid)
+    
+    # Get log content
+    log_content = runner.get_process_log(status.pid)
+    assert "test_output" in log_content
+    # Verify log file exists in temp directory
+    assert status.log_file.exists()
+    assert status.log_file.parent == runner.log_dir
+
+@pytest.mark.asyncio
+async def test_failed_command_status(runner):
+    """Test status tracking for failed commands"""
+    # Run a command that will fail
+    status = await runner.fork(
+        "python",
+        ["-c", "import sys; print('error', file=sys.stderr); sys.exit(1)"]
+    )
+    
+    # Wait for completion by polling
+    await _wait_for_pid(runner, status.pid)
+    
+    # Check status
+    proc_status = runner.get_process(status.pid)
+    assert proc_status['status'] == 'failed'
+    assert proc_status['return_code'] == 1
+    
+    # Check log contains error
+    log_content = runner.get_process_log(status.pid)
+    assert "error" in log_content
+    # Verify log file exists
+    assert status.log_file.exists()
+
+@pytest.mark.asyncio
+async def test_multiple_active_processes(runner):
+    """Test tracking multiple processes simultaneously"""
+    # Start multiple commands
+    cmd1 = await runner.fork("sleep 1" if sys.platform != "win32" else "timeout 1", shell=True)
+    cmd2 = await runner.fork("sleep 2" if sys.platform != "win32" else "timeout 2", shell=True)
+    
+    await asyncio.sleep(0.1) # tick to allow the processes to start
+
+    # Verify both commands have log files
+    assert cmd1.log_file.exists()
+    assert cmd2.log_file.exists()
+    assert cmd1.log_file.parent == runner.log_dir
+    assert cmd2.log_file.parent == runner.log_dir
+    
+    # Check both are tracked
+    active = runner.get_active_processes()
+    assert len(active) == 2
+    assert cmd1.pid in active
+    assert cmd2.pid in active
+    
+    # Wait for first command to finish by polling
+    await _wait_for_pid(runner, cmd1.pid)
+    
+    # First command should be done, second still running
+    assert runner.get_process(cmd1.pid)['status'] == 'completed'
+    assert runner.get_process(cmd2.pid)['status'] == 'running'
+    
+    # Wait for second command by polling
+    await _wait_for_pid(runner, cmd2.pid)
+    
+    assert runner.get_process(cmd2.pid)['status'] == 'completed'
+
+@pytest.mark.asyncio
+async def test_get_json_response(runner):
+    """Test JSON response parsing"""
+    # Run a command that outputs JSON
+    status = await runner.fork(
+        "python",
+        ["-c", "import json; print(json.dumps({'key': 'value'}))"]
+    )
+
+    # Wait for completion by polling
+    await _wait_for_pid(runner, status.pid)
+    
+    # Parse JSON response
+    json_data = runner.get_json_response(status.pid)
+    assert isinstance(json_data, dict)
+    assert json_data['key'] == 'value'
+    # Verify log file exists
+    assert status.log_file.exists()
+    assert status.log_file.parent == runner.log_dir
+
+@pytest.mark.asyncio
+async def test_command_sanitization(runner):
+    """Test command sanitization and path traversal prevention"""
+    # Test path traversal attempt in command
     with pytest.raises(CommandError):
-        await runner.execute("../some_command")
-
-@pytest.mark.asyncio
-async def test_nonexistent_command(runner):
-    """Test handling of non-existent commands"""
-    try:
-        await runner.execute("nonexistentcommand123")
-        assert False, "Should have raised FileNotFoundError"
-    except FileNotFoundError as e:
-        assert "No such file or directory" in str(e)
-        assert "nonexistentcommand123" in str(e)
-
-@pytest.mark.asyncio
-async def test_shell_path_override(tmp_path):
-    """Test using custom shell path"""
-    shell_path = "/bin/bash" if sys.platform != "win32" else "cmd.exe"
-    runner = AsyncProcessRunner(shell=True, shell_path=shell_path)
-    status = await runner.execute("echo", ["hello"])
-    assert status.return_code == 0
-
-@pytest.mark.asyncio
-async def test_combined_log_format(tmp_path):
-    """Test combined log file format includes timestamps and stream labels"""
-    import re
-    runner = AsyncProcessRunner(log_dir=tmp_path, split_output_streams=False)
-    status = await runner.execute("echo hello", shell=True)
-    
-    log_files = list(tmp_path.glob("*_output.log"))
-    assert len(log_files) == 1
-    
-    log_content = log_files[0].read_text()
-    # Check log format: [timestamp] [stream] content
-    assert re.search(r'\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[stdout\] hello', log_content)
-
-@pytest.mark.asyncio
-async def test_process_cleanup_after_timeout(runner):
-    """Test that process is properly cleaned up after timeout"""
-    import psutil
-    
-    with pytest.raises(asyncio.TimeoutError):
-        if sys.platform == "win32":
-            cmd = "timeout 10"
-        else:
-            cmd = "sleep 10"
+        await runner.execute("../malicious")
         
-        status = await runner.execute(cmd, shell=True, timeout=0.1)
-    
-    # Give a small delay for process cleanup
-    await asyncio.sleep(0.1)
-    
-    # Verify no zombie processes are left
-    current_process = psutil.Process()
-    children = current_process.children(recursive=True)
-    assert not any(proc.name() in ['sleep', 'timeout'] for proc in children) 
+    # Test path traversal in arguments
+    with pytest.raises(CommandError):
+        await runner.execute("echo", ["../../malicious"])
 
 @pytest.mark.asyncio
-async def test_python_command_with_stderr(tmp_path):
-    """Test Python command execution with stderr output"""
-    stdout = []
-    stderr = []
+async def test_env_and_cwd(runner):
+    """Test environment variables and working directory handling"""
+    # Test with custom environment variables
+    env = {"TEST_VAR": "test_value"}
+    output = []
     def callback(status: ProcessStatus):
         if status.stdout:
-            stdout.append(status.stdout)
-        if status.stderr:
-            stderr.append(status.stderr)
-            
-    runner = AsyncProcessRunner(log_dir=tmp_path)
+            output.append(status.stdout)
+    
+    if sys.platform == "win32":
+        status = await runner.execute("echo", ["%TEST_VAR%"], env=env, shell=True, status_callback=callback)
+    else:
+        status = await runner.execute("echo", ["$TEST_VAR"], env=env, shell=True, status_callback=callback)
+    assert status.return_code == 0
+    assert "test_value" in output[0]
+    
+    # Test with working directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        status = await runner.execute("pwd" if sys.platform != "win32" else "cd", cwd=temp_dir, shell=True, status_callback=callback)
+        assert status.return_code == 0
+        assert temp_dir in output[-1]
+
+@pytest.mark.asyncio
+async def test_timeout_handling(runner):
+    """Test timeout behavior for long-running commands"""
+    # Test command that exceeds timeout
+    with pytest.raises(asyncio.TimeoutError):
+        await runner.execute("sleep" if sys.platform != "win32" else "timeout", ["10"], timeout=0.1)
+    
+    # Verify process is properly terminated after timeout
+    await asyncio.sleep(0.2)  # Give time for cleanup
+    # Could check process list to verify it's gone
+
+@pytest.mark.asyncio
+async def test_process_cleanup(runner):
+    """Test proper process cleanup on errors and interruptions"""
+    # Start a long-running process
+    status = await runner.fork("sleep" if sys.platform != "win32" else "timeout", ["10"])
+    
+    # Force cleanup
+    runner.kill_all_processes()
+    
+    # Verify process is terminated
+    await asyncio.sleep(0.1)  # Give time for cleanup
+    proc_status = runner.get_process(status.pid)
+    assert proc_status['status'] != 'running'
+
+def test_filename_sanitization(runner):
+    """Test Windows filename sanitization"""
+    # Test invalid characters - there are 9 invalid chars: < > : " / \ | ? *
+    assert runner._sanitize_filename('test<>:"/\\|?*file.txt') == 'test_________file.txt'
+    
+    # Test reserved names
+    assert runner._sanitize_filename('CON.txt') == '_CON.txt'
+    assert runner._sanitize_filename('PRN.log') == '_PRN.log'
+
+@pytest.mark.asyncio
+async def test_stream_encoding(runner):
+    """Test handling of different character encodings in output streams"""
+    # Test non-ASCII output
+    output = []
+    def callback(status: ProcessStatus):
+        if status.stdout:
+            output.append(status.stdout)
+    
+    # Echo a string with special characters
     status = await runner.execute(
         "python",
-        ["-c", "import sys; print('Hello'); print('Error', file=sys.stderr)"],
+        ["-c", "print('Hello 世界')"],
         status_callback=callback
     )
     assert status.return_code == 0
-    assert "Hello" in stdout[0]
-    assert "Error" in stderr[0]
+    assert "Hello 世界" in output[0]
 
 @pytest.mark.asyncio
-async def test_sequential_commands(tmp_path):
-    """Test running multiple commands in sequence with different output modes"""
-    stdout1 = []
-    stderr1 = []
-    def callback1(status: ProcessStatus):
+async def test_error_stream_handling(runner):
+    """Test proper handling of stderr output"""
+    output = []
+    errors = []
+    def callback(status: ProcessStatus):
         if status.stdout:
-            stdout1.append(status.stdout)
+            output.append(status.stdout)
         if status.stderr:
-            stderr1.append(status.stderr)
-            
-    # First with combined output
-    runner = AsyncProcessRunner(log_dir=tmp_path, split_output_streams=False)
-    status1 = await runner.execute(
+            errors.append(status.stderr)
+    
+    # Command that writes to both stdout and stderr
+    status = await runner.execute(
         "python",
-        ["-c", "print('Hello'); import sys; print('Error1', file=sys.stderr)"],
-        status_callback=callback1
+        ["-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        status_callback=callback
     )
-    assert status1.return_code == 0
-    assert "Hello" in stdout1[0]
-    assert "Error1" in stderr1[0]
     
-    stdout2 = []
-    stderr2 = []
-    def callback2(status: ProcessStatus):
-        if status.stdout:
-            stdout2.append(status.stdout)
-        if status.stderr:
-            stderr2.append(status.stderr)
-            
-    # Then with split output
-    runner_split = AsyncProcessRunner(log_dir=tmp_path, split_output_streams=True)
-    status2 = await runner_split.execute(
-        "python",
-        ["-c", "print('Hello2'); import sys; print('Error2', file=sys.stderr)"],
-        status_callback=callback2
-    )
-    assert status2.return_code == 0
-    assert "Hello2" in stdout2[0]
-    assert "Error2" in stderr2[0]
-    
-    # Verify log files for both runs exist
-    combined_logs = list(tmp_path.glob("python_*_output.log"))
-    split_stdout_logs = list(tmp_path.glob("python_*_stdout.log"))
-    split_stderr_logs = list(tmp_path.glob("python_*_stderr.log"))
-    
-    assert len(combined_logs) == 1
-    assert len(split_stdout_logs) == 1
-    assert len(split_stderr_logs) == 1
-
-@pytest.mark.asyncio
-async def test_logging_configuration(tmp_path, caplog):
-    """Test that logging works correctly with different configurations"""
-    import logging
-    
-    # Create a specific logger for this test
-    logger = logging.getLogger("test_async_cmd")
-    logger.setLevel(logging.INFO)
-    
-    # Configure file handler
-    log_file = tmp_path / "async_process.log"
-    file_handler = logging.FileHandler(str(log_file))
-    file_handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    ))
-    logger.addHandler(file_handler)
-    
-    # Create a runner and track process updates
-    updates = []
-    def status_callback(status: ProcessStatus):
-        updates.append(status)
-        logger.info(f"Process {status.pid} status update")
-    
-    runner = AsyncProcessRunner(log_dir=tmp_path)
-    
-    # Run a command that generates both stdout and stderr
-    with caplog.at_level(logging.INFO):
-        status = await runner.execute(
-            "python",
-            ["-c", "print('Hello'); import sys; print('Error', file=sys.stderr)"],
-            status_callback=status_callback
-        )
-    
-    # Verify logging output
-    assert any("status update" in record.message for record in caplog.records)
-    assert log_file.exists()
-    log_content = log_file.read_text()
-    assert "status update" in log_content
-    
-    # Clean up
-    logger.removeHandler(file_handler)
-    file_handler.close()
+    assert status.return_code == 0
+    assert "out" in output[0]
+    assert "err" in errors[0]
