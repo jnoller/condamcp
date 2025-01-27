@@ -1,5 +1,6 @@
 # condamcp
 
+**WARNING: This is a work in progress and not ready for production use. Claude is having an issue with the new fork/polling architecture I am working through.**
 ## Overview
 
 condamcp is a collection of Model Context Protocol (MCP) server implementations that enable natural language interactions with the conda ecosystem. It bridges the gap between human intent and conda's powerful capabilities, making environment management, package building, and conda operations accessible to users of all skill levels.
