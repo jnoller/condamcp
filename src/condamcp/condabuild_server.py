@@ -13,7 +13,7 @@ logs_dir = Path.home() / ".condamcp" / "mcp" / "build_logs"
 logs_dir.mkdir(parents=True, exist_ok=True)
 
 # Initialize conda build wrapper
-conda_build = AsyncCondaBuild(log_dir=str(logs_dir))
+conda_build = AsyncCondaBuild(log_dir=str(logs_dir), track_processes=True)
 
 @mcp.tool()
 async def build(
